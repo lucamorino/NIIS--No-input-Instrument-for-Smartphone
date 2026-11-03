@@ -20,6 +20,7 @@ No server, no network audio, no shared state — open the page, press
   - **MIC** feeds the microphone into the device (needs https, which Pages provides).
   - Click the LED to switch an input on or off; the knob sets its level in dB.
 - **Level / mute** — channel fader, post device (also affects LOOP).
+- **coupled** — the lamp in the bandpass section latches the `bp_coupled` inport.
 - **trig / start-stop / motion** — RNBO `trig` and `start` inports, and a
   readout of the accelerometer data sent to the `accelerometer` inport.
 - The corner button switches between the compact (one-screen) and expanded
@@ -34,7 +35,7 @@ index.html                    entry point
 js/app.js                     the interface + audio graph (ES module, no build step)
 js/vendor/lit-html.js         lit-html 3.3.3 (BSD-3-Clause, see lit-html.LICENSE)
 style/app.scss → app.css      styles (app.css is committed, compiled from app.scss)
-assets/rnbo_export/           RNBO export of the device (patch.export.json, …)
+assets/rnbo_export/           RNBO export of the device (NINA.export.json)
 assets/rnbo/<version>/        rnbo.js matching the export
 tools/sync-from-nina.sh       pull a new export from a NINA checkout
 ```
@@ -51,7 +52,9 @@ Re-export the patch from Max into the NINA project, then:
 tools/sync-from-nina.sh ../NINA_netNIMB
 ```
 
-This copies the export and `rnbo.js` here and recompiles the stylesheet. The
+This copies `NINA.export.json` and the matching `rnbo.js` here (dropping
+the old ones) and recompiles the stylesheet. Set `EXPORT=<name>.export.json`
+if the export is renamed, and update `PATCH_EXPORT_URL` in `js/app.js` to match. The
 interface reads parameter ranges from the export, so renamed or new
 parameters still show up (unknown ones land in a "parameters" section).
 

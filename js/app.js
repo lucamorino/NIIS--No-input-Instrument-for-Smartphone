@@ -17,7 +17,7 @@
 import { html, render, svg } from './vendor/lit-html.js';
 
 // Where the RNBO export lives — drop a new export in this folder to update
-const PATCH_EXPORT_URL = 'assets/rnbo_export/patch.export.json';
+const PATCH_EXPORT_URL = 'assets/rnbo_export/NINA.export.json';
 
 // Input bus fader range, in dB (same as NINA's receive buses)
 const BUS_MIN_DB = -30;
@@ -34,13 +34,17 @@ const LOOP_DELAY_S = 0.12;
 // against whatever the exported device actually declares, so the patch can be
 // re-exported without breaking the interface. A section whose parameters are
 // all missing is skipped, and parameters the patch exposes that no section
-// claims land in a trailing "parameters" section.
+// claims land in a trailing "parameters" section. A split section can also
+// carry a `toggle`, a latching button between its two knobs that drives an
+// inport with 0 / 1. A `hidden` section is not drawn (in NINA it is driven from
+// the controller only); its parameter keeps the value the patch exports.
 const SECTIONS = [
   {
     title: 'bandpass filter',
     layout: 'split',
     viz: 'curve',
     left: { id: 'bp', label: 'cutoff', min: 120, max: 1000, decimals: 0, unit: 'Hz' },
+    toggle: { id: 'bp_coupled', label: 'coupled' },
     right: { id: 'bp_q', label: 'q', min: 0.0, max: 1.0, decimals: 2 },
   },
   {
@@ -55,7 +59,7 @@ const SECTIONS = [
     layout: 'split',
     viz: 'taps',
     left: { id: 'del', label: 'time', min: 1, max: 1800, decimals: 0, unit: 'ms' },
-    right: { id: 'fb_trim', label: 'feedback', min: 0.05, max: 0.26, decimals: 3 },
+    right: { id: 'fb_trim', label: 'feedback', min: 0.001, max: 3.99, decimals: 3 },
   },
   {
     title: 'drive',
@@ -63,6 +67,15 @@ const SECTIONS = [
     knobs: [
       { id: 'fb_gain', label: 'fb gain', min: 0.001, max: 3.9, decimals: 2, dots: true },
       { id: 'modulation', label: 'modulation', min: 0.0, max: 1.0, decimals: 2, dots: true },
+    ],
+  },
+  {
+    // Controller only in NINA, for now
+    title: 'fade',
+    layout: 'center',
+    hidden: true,
+    knobs: [
+      { id: 'fade', label: 'fade', min: 20, max: 1000, decimals: 0, unit: 'ms' },
     ],
   },
 ];
@@ -433,6 +446,33 @@ async function main($container, audioContext) {
     return dial;
   }
 
+  // Latching button bound to an inport — sends 1 when engaged, 0 when released
+  function makeToggle(cfg) {
+    if (!patcher.desc.inports.some(port => port.tag === cfg.id)) {
+      console.warn(`[rnbo] inport "${cfg.id}" not found, skipped`);
+      return null;
+    }
+
+    const toggle = {
+      id: cfg.id,
+      label: cfg.label,
+      kind: 'toggle',
+      on: false,
+    };
+
+    toggle.set = on => {
+      if (on === toggle.on) {
+        return;
+      }
+      toggle.on = on;
+      sendMessageToInport(cfg.id, [on ? 1 : 0]);
+      scheduleRender();
+    };
+
+    sendMessageToInport(cfg.id, [0]);
+    return toggle;
+  }
+
   function buildSections() {
     const sections = [];
     const claimed = new Set();
@@ -454,9 +494,10 @@ async function main($container, audioContext) {
 
       const left = makeDial(cfg.left);
       const right = makeDial(cfg.right);
+      const toggle = cfg.toggle ? makeToggle(cfg.toggle) : null;
 
-      if (left || right) {
-        sections.push({ ...cfg, left, right });
+      if (left || right || toggle) {
+        sections.push({ ...cfg, left, right, toggle });
       }
     }
 
@@ -486,11 +527,13 @@ async function main($container, audioContext) {
   }
 
   const sections = buildSections();
+  const visibleSections = sections.filter(section => !section.hidden);
 
-  function sectionDials(section) {
+  // Every control of a section, in the order it reads on the strip
+  function sectionItems(section) {
     return section.layout === 'center'
       ? section.knobs
-      : [section.left, section.right].filter(Boolean);
+      : [section.left, section.toggle, section.right].filter(Boolean);
   }
 
   // ── Channel fader + mute ───────────────────────────────────────────────────
@@ -688,6 +731,28 @@ async function main($container, audioContext) {
     `;
   }
 
+  // Small lamp button for an inport toggle. The compact view drops the text.
+  function renderToggle(toggle) {
+    return html`
+      <button
+        class="trig ${toggle.on ? 'is-on' : ''}"
+        type="button"
+        title=${toggle.label}
+        aria-pressed=${toggle.on ? 'true' : 'false'}
+        @click=${() => toggle.set(!toggle.on)}
+      >
+        <span class="trig-lamp"></span>
+        <span class="trig-text">${toggle.label}</span>
+      </button>
+    `;
+  }
+
+  function renderItemCell(item) {
+    return item.kind === 'toggle'
+      ? html`<div class="cell cell--toggle">${renderToggle(item)}</div>`
+      : renderKnobCell(item);
+  }
+
   // Resonant bandpass response, drawn from the section's own two knobs
   function renderCurveViz(section) {
     const cutoff = section.left ? section.left.control : null;
@@ -770,10 +835,10 @@ async function main($container, audioContext) {
     let body;
 
     if (!expanded) {
-      // Compact: knobs only, side by side, no visualiser
+      // Compact: controls only, side by side, no visualiser
       body = html`
         <div class="section-body section-body--center">
-          ${sectionDials(section).map(renderKnobCell)}
+          ${sectionItems(section).map(renderItemCell)}
         </div>
       `;
     } else if (section.layout === 'center') {
@@ -790,7 +855,9 @@ async function main($container, audioContext) {
       body = html`
         <div class="section-body section-body--split">
           ${renderKnobCell(section.left)}
-          ${viz}
+          ${section.toggle ? html`
+            <div class="section-center">${viz}${renderToggle(section.toggle)}</div>
+          ` : viz}
           ${renderKnobCell(section.right)}
         </div>
       `;
@@ -938,8 +1005,8 @@ async function main($container, audioContext) {
             </section>
 
             ${expanded
-              ? sections.map(renderSection)
-              : html`<div class="section-grid">${sections.map(renderSection)}</div>`}
+              ? visibleSections.map(renderSection)
+              : html`<div class="section-grid">${visibleSections.map(renderSection)}</div>`}
             ${renderLevel()}
           </div>
 
